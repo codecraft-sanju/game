@@ -32,24 +32,28 @@ import {
 
 export default function App() {
   const canvasRef = useRef(null);
-  const stageRef = useRef(null); // <-- the scaled stage wrapper
+  const stageRef = useRef(null);        // scaled game world container
   const rafRef = useRef(0);
 
   // orientation + scaling
   const [isLandscape, setIsLandscape] = useState(window.innerWidth >= window.innerHeight);
   const [scale, setScale] = useState(1);
+  const [vh, setVh] = useState(window.innerHeight); // visual viewport height fix
 
+  // game ui state
   const [running, setRunning] = useState(false);
   const [winner, setWinner] = useState(null);
   const [countdown, setCountdown] = useState(ROUND_TIME);
   const [showTutorial, setShowTutorial] = useState(true);
   const [uiTick, setUiTick] = useState(0);
 
+  // inputs
   const controls = useRef({
     pulkit: { vx: 0, vy: 0, dash: false, lastDash: -Infinity, dashUntil: 0 },
     harshil: { vx: 0, vy: 0, dash: false, lastDash: -Infinity, dashUntil: 0 },
   });
 
+  // sim state
   const sRef = useRef({
     players: {
       pulkit: initPlayer(WORLD_W * 0.25, WORLD_H * 0.78),
@@ -64,46 +68,57 @@ export default function App() {
     lastPowerCheck: 0,
   });
 
-  // ===== Orientation + Scale handling =====
+  // ===== Layout: scale stage to fit, but keep UI layer fixed to viewport =====
   const recomputeLayout = () => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     const landscape = w >= h;
     setIsLandscape(landscape);
 
-    // fit whole WORLD into viewport while keeping aspect
     const fitScale = Math.min(w / WORLD_W, h / WORLD_H);
     setScale(fitScale);
 
-    // apply transform to stage (kept outside React style to avoid extra renders)
     if (stageRef.current) {
       stageRef.current.style.transform = `translate(-50%, -50%) scale(${fitScale})`;
     }
   };
 
-  useEffect(() => {
-    // recompute once immediately
-    recomputeLayout();
-
-    // react to resize + orientation changes (visualViewport for mobile address bar jitter)
+  // visualViewport height (mobile address bar shrink/expand) fix
+  const bindViewport = () => {
     const vv = window.visualViewport;
-    const onResize = () => recomputeLayout();
-    window.addEventListener("resize", onResize);
-    window.addEventListener("orientationchange", onResize);
-    if (vv) vv.addEventListener("resize", onResize);
+    const h = vv ? vv.height : window.innerHeight;
+    setVh(h);
+    recomputeLayout();
+  };
+
+  useEffect(() => {
+    bindViewport();
+
+    window.addEventListener("resize", bindViewport);
+    window.addEventListener("orientationchange", bindViewport);
+    window.addEventListener("scroll", bindViewport, { passive: true });
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", bindViewport);
+      window.visualViewport.addEventListener("scroll", bindViewport);
+    }
 
     return () => {
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("orientationchange", onResize);
-      if (vv) vv.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", bindViewport);
+      window.removeEventListener("orientationchange", bindViewport);
+      window.removeEventListener("scroll", bindViewport);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", bindViewport);
+        window.visualViewport.removeEventListener("scroll", bindViewport);
+      }
     };
   }, []);
 
-  // Optional: fullscreen on first tap (mobile vibes)
+  // Optional: fullscreen on first tap (feel like an app)
   useEffect(() => {
     const enableFullscreen = () => {
       const el = document.documentElement;
-      if (el.requestFullscreen) el.requestFullscreen();
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
       else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
       document.removeEventListener("click", enableFullscreen);
     };
@@ -160,8 +175,8 @@ export default function App() {
     const drawObstacle = (ctx, o) => {
       ctx.beginPath();
       ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,255,255,0.1)";
-      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
       ctx.lineWidth = 2;
       ctx.fill();
       ctx.stroke();
@@ -191,7 +206,7 @@ export default function App() {
       const s = sRef.current;
       const now = performance.now();
 
-      // Clear + BG
+      // BG
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       const g = ctx.createLinearGradient(0, 0, WORLD_W, WORLD_H);
       g.addColorStop(0, COLORS.bgA);
@@ -308,58 +323,89 @@ export default function App() {
     }
   };
 
+  // ===== Render =====
   return (
-    <div style={styles.root}>
+    <div
+      style={{
+        ...styles.root,
+        // visualViewport height fix to truly fullscreen (esp. mobile)
+        minHeight: vh,
+        height: vh,
+      }}
+    >
       {/* Letterboxed background fill */}
       <div style={styles.backFill} />
 
-      {/* Stage: fixed size (WORLD_W x WORLD_H), centered + scaled */}
+      {/* Scaled game stage (fixed WORLD size, centered, fits any screen) */}
       <div ref={stageRef} style={styles.stage}>
-        {/* Everything inside stage stays clamped to game bounds */}
         <Background />
-        <canvas ref={canvasRef} width={WORLD_W} height={WORLD_H} style={styles.canvas} />
-        <Hud key={uiTick} players={sRef.current.players} countdown={countdown} winner={winner} />
+        <canvas
+          ref={canvasRef}
+          width={WORLD_W}
+          height={WORLD_H}
+          style={styles.canvas}
+        />
+        <Hud
+          key={uiTick}
+          players={sRef.current.players}
+          countdown={countdown}
+          winner={winner}
+        />
 
         {showTutorial && (
           <div style={styles.tutorial}>
-            <h2>How to Play</h2>
-            <ul>
+            <h2 style={{ margin: 0 }}>How to Play</h2>
+            <ul style={{ marginTop: 12, lineHeight: 1.6 }}>
               <li>⭐ Collect stars to score points</li>
               <li>🟢 Grab boosts for speed</li>
               <li>🪨 Dodge obstacles</li>
-              <li>🎮 Use joysticks to move both players</li>
+              <li>🎮 Move with joysticks (bottom-left & top-right)</li>
               <li>⚡ Tap dash for burst speed</li>
               <li>🥇 First to {WIN_SCORE} stars wins!</li>
             </ul>
-            <button onClick={startGame} style={styles.startBtn}>Start Game</button>
+            <button onClick={startGame} style={styles.startBtn}>
+              Start Game
+            </button>
           </div>
         )}
-
-        {running && (
-          <>
-            <div style={styles.topControls}>
-              <Joystick
-                label="H"
-                onChange={(x, y) => (controls.current.harshil = { vx: x, vy: y })}
-              />
-              <button style={styles.dashBtn} onClick={() => onDash("harshil")}>⚡</button>
-            </div>
-            <div style={styles.bottomControls}>
-              <Joystick
-                label="P"
-                onChange={(x, y) => (controls.current.pulkit = { vx: x, vy: y })}
-              />
-              <button style={styles.dashBtn} onClick={() => onDash("pulkit")}>⚡</button>
-            </div>
-          </>
-        )}
       </div>
+
+      {/* Viewport-fixed Controls Layer (never scales, never goes off-screen) */}
+      {isLandscape && running && (
+        <div style={styles.controlsLayer}>
+          {/* Bottom-left: Pulkit joystick + dash */}
+          <div style={styles.controlDockBL}>
+            <Joystick
+              label="P"
+              size={110}                  // Joystick component can ignore if not used; safe
+              onChange={(x, y) => (controls.current.pulkit = { vx: x, vy: y })}
+            />
+            <button style={styles.dashBtn} onClick={() => onDash("pulkit")} aria-label="Pulkit Dash">
+              ⚡
+            </button>
+          </div>
+
+          {/* Top-right: Harshil joystick + dash */}
+          <div style={styles.controlDockTR}>
+            <button style={styles.dashBtn} onClick={() => onDash("harshil")} aria-label="Harshil Dash">
+              ⚡
+            </button>
+            <Joystick
+              label="H"
+              size={110}
+              onChange={(x, y) => (controls.current.harshil = { vx: x, vy: y })}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Portrait lock overlay */}
       {!isLandscape && (
         <div style={styles.rotateOverlay}>
           <div style={styles.rotateCard}>
-            <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 6 }}>Rotate your phone</div>
+            <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 6 }}>
+              Rotate your phone
+            </div>
             <div style={{ opacity: 0.9 }}>
               This game runs in landscape only. Turn your device sideways to play.
             </div>
@@ -370,6 +416,13 @@ export default function App() {
   );
 }
 
+const SA = {
+  t: "env(safe-area-inset-top)",
+  r: "env(safe-area-inset-right)",
+  b: "env(safe-area-inset-bottom)",
+  l: "env(safe-area-inset-left)",
+};
+
 const styles = {
   root: {
     position: "fixed",
@@ -378,14 +431,16 @@ const styles = {
     overflow: "hidden",
     touchAction: "none",
     userSelect: "none",
+    WebkitTapHighlightColor: "transparent",
   },
   backFill: {
     position: "absolute",
     inset: 0,
-    background: `radial-gradient(1200px 800px at 50% 50%, rgba(255,255,255,0.06), transparent 60%)`,
+    background:
+      "radial-gradient(1200px 800px at 50% 50%, rgba(255,255,255,0.06), transparent 60%)",
     pointerEvents: "none",
   },
-  // Fixed-size stage centered; scale applied via inline style in code
+  // Fixed world, centered — scaled via inline style
   stage: {
     position: "absolute",
     top: "50%",
@@ -395,8 +450,13 @@ const styles = {
     transform: "translate(-50%, -50%) scale(1)", // updated dynamically
     transformOrigin: "top left",
     willChange: "transform",
+    overflow: "hidden",
+    borderRadius: 16,
   },
-  canvas: { position: "absolute", inset: 0 },
+  canvas: {
+    position: "absolute",
+    inset: 0,
+  },
   tutorial: {
     position: "absolute",
     inset: 0,
@@ -404,7 +464,7 @@ const styles = {
     flexDirection: "column",
     justifyContent: "center",
     alignItems: "center",
-    background: "rgba(0,0,0,0.8)",
+    background: "rgba(0,0,0,0.78)",
     color: "#fff",
     zIndex: 20,
     textAlign: "center",
@@ -414,41 +474,59 @@ const styles = {
     marginTop: 16,
     background: "linear-gradient(135deg, #2563eb, #7c3aed)",
     border: "none",
-    padding: "10px 20px",
+    padding: "12px 22px",
     borderRadius: 999,
     color: "#fff",
     fontWeight: 700,
     boxShadow: "0 10px 30px rgba(124,58,237,0.35)",
+    cursor: "pointer",
   },
-  topControls: {
-    position: "absolute",
-    top: 10,
-    right: 10,
+
+  // ===== Controls Layer (fixed to viewport, safe-area aware) =====
+  controlsLayer: {
+    position: "fixed",
+    inset: 0,
+    pointerEvents: "none", // allow touches to pass except on our controls
+    zIndex: 50,
+  },
+
+  controlDockBL: {
+    position: "fixed",
+    left: `calc(12px + ${SA.l})`,
+    bottom: `calc(12px + ${SA.b})`,
     display: "flex",
     alignItems: "center",
-    gap: 8,
-    zIndex: 10,
+    gap: 10,
+    pointerEvents: "auto",
   },
-  bottomControls: {
-    position: "absolute",
-    bottom: 10,
-    left: 10,
+
+  controlDockTR: {
+    position: "fixed",
+    right: `calc(12px + ${SA.r})`,
+    top: `calc(12px + ${SA.t})`,
     display: "flex",
     alignItems: "center",
-    gap: 8,
-    zIndex: 10,
+    gap: 10,
+    pointerEvents: "auto",
   },
+
   dashBtn: {
     fontSize: 22,
-    background: "rgba(255,255,255,0.15)",
-    border: "1px solid rgba(255,255,255,0.25)",
-    borderRadius: "50%",
-    width: 50,
-    height: 50,
+    background: "rgba(255,255,255,0.18)",
+    border: "1px solid rgba(255,255,255,0.28)",
+    borderRadius: 999,
+    width: 56,
+    height: 56,
     color: "white",
     textShadow: "0 0 4px #fff",
+    backdropFilter: "blur(8px)",
+    boxShadow: "0 6px 18px rgba(0,0,0,0.25)",
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
   },
-  // Portrait lock overlay (blocks everything)
+
+  // Portrait lock overlay
   rotateOverlay: {
     position: "fixed",
     inset: 0,
