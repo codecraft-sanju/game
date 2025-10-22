@@ -1,17 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
 
 /**
- * 📱 Pulkit vs Harshil — Advanced + Fullscreen Button (Mobile Landscape)
+ * ⚡ Pulkit vs Harshil — Ultimate Edition (Responsive + Fullscreen)
  *
- * ✅ Dual on-screen joysticks + Dash buttons
- * ✅ Collect stars, obstacles, power-ups
- * ✅ Fullscreen toggle button (📺 icon)
- * ✅ Chrome bar auto-hide trick
+ * ✅ Dual joysticks + dash buttons (touch + mouse)
+ * ✅ Score, timer, winner overlay
+ * ✅ Auto fullscreen (mobile Chrome UI hide)
+ * ✅ Tutorial overlay for first-time play
+ * ✅ Smooth responsive scaling
  */
 
 const WORLD_W = 960;
 const WORLD_H = 540;
 const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
 const PLAYER_R = 16;
 const STAR_R = 10;
 const OBSTACLE_R = 18;
@@ -44,9 +46,9 @@ const COLORS = {
 };
 
 function useLandscape() {
-  const [isLandscape, setIsLandscape] = useState(window.innerWidth >= window.innerHeight);
+  const [isLandscape, setIsLandscape] = useState(window.innerWidth > window.innerHeight);
   useEffect(() => {
-    const onResize = () => setIsLandscape(window.innerWidth >= window.innerHeight);
+    const onResize = () => setIsLandscape(window.innerWidth > window.innerHeight);
     window.addEventListener("resize", onResize);
     window.addEventListener("orientationchange", onResize);
     return () => {
@@ -61,10 +63,10 @@ export default function App() {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const rafRef = useRef(0);
-
   const [running, setRunning] = useState(false);
   const [winner, setWinner] = useState(null);
   const [countdown, setCountdown] = useState(ROUND_TIME);
+  const [showTutorial, setShowTutorial] = useState(true);
 
   const controls = useRef({
     pulkit: { vx: 0, vy: 0, dash: false, lastDash: -Infinity, dashUntil: 0 },
@@ -85,12 +87,14 @@ export default function App() {
     parallax: makeParallax(80),
   });
 
-  // Auto-scroll trick to hide Chrome UI
+  const isLandscape = useLandscape();
+
+  // Hide chrome top bar trick
   useEffect(() => {
-    setTimeout(() => window.scrollTo(0, 1), 500);
+    setTimeout(() => window.scrollTo(0, 1), 800);
   }, []);
 
-  // Resize canvas
+  // Auto resize
   useEffect(() => {
     const resize = () => {
       const canvas = canvasRef.current;
@@ -112,21 +116,21 @@ export default function App() {
     };
     resize();
     const ro = new ResizeObserver(resize);
-    ro.observe(wrapRef.current);
+    if (wrapRef.current) ro.observe(wrapRef.current);
     return () => ro.disconnect();
   }, []);
 
-  // Fullscreen toggle
-  const toggleFullscreen = () => {
-    const el = document.documentElement;
-    if (!document.fullscreenElement) {
+  // Fullscreen auto on first click
+  useEffect(() => {
+    const enableFullscreen = () => {
+      const el = document.documentElement;
       if (el.requestFullscreen) el.requestFullscreen();
       else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-    } else {
-      if (document.exitFullscreen) document.exitFullscreen();
-      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-    }
-  };
+      document.removeEventListener("click", enableFullscreen);
+    };
+    document.addEventListener("click", enableFullscreen);
+    return () => document.removeEventListener("click", enableFullscreen);
+  }, []);
 
   // Game loop
   useEffect(() => {
@@ -149,16 +153,18 @@ export default function App() {
         if (remain <= 0) {
           setRunning(false);
           const { pulkit, harshil } = s.players;
-          if (pulkit.score > harshil.score) setWinner("pulkit");
-          else if (harshil.score > pulkit.score) setWinner("harshil");
-          else setWinner("draw");
+          setWinner(
+            pulkit.score > harshil.score ? "Pulkit" : harshil.score > pulkit.score ? "Harshil" : "Draw"
+          );
         }
 
+        // spawn stars
         if (now - s.lastStarSpawn > STAR_RESPAWN_MS && s.stars.length < MAX_STARS) {
           s.lastStarSpawn = now;
           s.stars.push(randStar());
         }
 
+        // spawn powers
         if (now - s.lastPowerTry > POWER_CHANCE_MS) {
           s.lastPowerTry = now;
           if (Math.random() < POWER_PROBABILITY && s.powers.length < 2) {
@@ -193,15 +199,11 @@ export default function App() {
       drawPlayer(ctx, s.players.pulkit, COLORS.p1);
       drawPlayer(ctx, s.players.harshil, COLORS.p2);
       drawHud(ctx, s.players, countdown, running, winner);
-
       rafRef.current = requestAnimationFrame(loop);
     };
-
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
   }, [running, countdown, winner]);
-
-  const isLandscape = useLandscape();
 
   const startGame = () => {
     const s = sRef.current;
@@ -224,6 +226,7 @@ export default function App() {
         vy: (Math.random() * 2 - 1) * 1.2,
       });
     }
+    setShowTutorial(false);
     setRunning(true);
   };
 
@@ -251,56 +254,124 @@ export default function App() {
       {!isLandscape && (
         <div style={styles.rotateOverlay}>
           <div style={styles.rotateCard}>
-            <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6 }}>Rotate to Play</div>
-            <div style={{ opacity: 0.8, fontSize: 14 }}>
-              Turn your phone sideways (landscape) for the best two-player experience.
-            </div>
+            <h3>Rotate your phone 📱</h3>
+            <p>Landscape mode gives best view for 2-player mode!</p>
           </div>
+        </div>
+      )}
+
+      {showTutorial && (
+        <div style={styles.tutorial}>
+          <h2>How to Play</h2>
+          <ul>
+            <li>⭐ Collect stars to score points.</li>
+            <li>⚡ Tap dash to boost speed.</li>
+            <li>🎮 Use joysticks to move both players.</li>
+            <li>🥇 First to {WIN_SCORE} stars wins!</li>
+          </ul>
+          <button onClick={startGame} style={styles.startBtn}>
+            Start Game
+          </button>
         </div>
       )}
 
       <div ref={wrapRef} style={styles.wrap}>
         <canvas ref={canvasRef} style={styles.canvas} />
 
-        {/* Fullscreen Button */}
-        <button onClick={toggleFullscreen} style={styles.fullscreenBtn} title="Toggle Fullscreen">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="22"
-            height="22"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="white"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M15 3h6v6" />
-            <path d="M9 21H3v-6" />
-            <path d="M21 3l-7 7" />
-            <path d="M3 21l7-7" />
-          </svg>
-        </button>
-
-        {/* Center UI */}
-        <div style={styles.centerUi}>
-          {!running && (
-            <button style={styles.primaryBtn} onClick={startGame}>
-              {winner ? "Play Again" : "Start"}
-            </button>
-          )}
-          {winner && (
-            <div style={styles.winnerBadge}>
-              {winner === "draw" ? "Draw!" : `${winner[0].toUpperCase() + winner.slice(1)} wins!`}
+        {/* Controls */}
+        {running && (
+          <>
+            <div style={styles.topControls}>
+              <Joystick label="H" onChange={onJoyHarshil} />
+              <button style={styles.dashBtn} onClick={() => onDash("harshil")}>
+                ⚡
+              </button>
             </div>
-          )}
-        </div>
+            <div style={styles.bottomControls}>
+              <Joystick label="P" onChange={onJoyPulkit} />
+              <button style={styles.dashBtn} onClick={() => onDash("pulkit")}>
+                ⚡
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// ---- helpers + draw fns ----
+/* ======= HELPER + DRAW FUNCTIONS ======= */
+// same as before (initPlayer, updatePlayer, collide, stars, powers, drawStar, etc.)
+// ——— [TOO LONG — I’ll send next message for part 2 👇]
+// ================== JOYSTICK COMPONENT ==================
+function Joystick({ label, onChange }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const handleStart = (e) => {
+      setActive(true);
+      update(e);
+    };
+    const handleMove = (e) => active && update(e);
+    const handleEnd = () => {
+      setActive(false);
+      setPos({ x: 0, y: 0 });
+      onChange(0, 0);
+    };
+
+    const update = (e) => {
+      const rect = el.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      const dx = t.clientX - (rect.left + cx);
+      const dy = t.clientY - (rect.top + cy);
+      const dist = Math.min(Math.hypot(dx, dy), 40);
+      const angle = Math.atan2(dy, dx);
+      const x = Math.cos(angle) * dist;
+      const y = Math.sin(angle) * dist;
+      setPos({ x, y });
+      onChange(x / 40, y / 40);
+    };
+
+    el.addEventListener("touchstart", handleStart);
+    el.addEventListener("touchmove", handleMove);
+    el.addEventListener("touchend", handleEnd);
+    el.addEventListener("mousedown", handleStart);
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleEnd);
+
+    return () => {
+      el.removeEventListener("touchstart", handleStart);
+      el.removeEventListener("touchmove", handleMove);
+      el.removeEventListener("touchend", handleEnd);
+      el.removeEventListener("mousedown", handleStart);
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleEnd);
+    };
+  }, [active]);
+
+  return (
+    <div ref={ref} style={styles.joyOuter}>
+      <div style={styles.joyBase}>
+        <div
+          style={{
+            ...styles.joyStick,
+            transform: `translate(${pos.x}px, ${pos.y}px)`,
+          }}
+        />
+      </div>
+      <div style={styles.joyLabel}>{label}</div>
+    </div>
+  );
+}
+
+// ================== GAME LOGIC HELPERS ==================
 function initPlayer(x, y) {
   return { x, y, vx: 0, vy: 0, score: 0, boostUntil: 0, hitTintUntil: 0 };
 }
@@ -361,9 +432,7 @@ function collectItems(player, stars, r) {
     const s = stars[i];
     const dx = player.x - s.x;
     const dy = player.y - s.y;
-    const dist2 = dx * dx + dy * dy;
-    const min2 = (PLAYER_R + r * 0.7) ** 2;
-    if (dist2 <= min2) {
+    if (dx * dx + dy * dy <= (PLAYER_R + r * 0.7) ** 2) {
       stars.splice(i, 1);
       player.score += 1;
     }
@@ -375,9 +444,7 @@ function takePowerups(player, powers) {
     const pw = powers[i];
     const dx = player.x - pw.x;
     const dy = player.y - pw.y;
-    const dist2 = dx * dx + dy * dy;
-    const min2 = (PLAYER_R + POWER_R * 0.7) ** 2;
-    if (dist2 <= min2) {
+    if (dx * dx + dy * dy <= (PLAYER_R + POWER_R * 0.7) ** 2) {
       powers.splice(i, 1);
       if (pw.type === "boost") player.boostUntil = now + BOOST_DURATION;
     }
@@ -391,6 +458,32 @@ function randPower() {
   const m = 50;
   return { type: "boost", x: m + Math.random() * (WORLD_W - m * 2), y: m + Math.random() * (WORLD_H - m * 2) };
 }
+function makeParallax(n) {
+  const arr = [];
+  for (let i = 0; i < n; i++)
+    arr.push({
+      x: Math.random() * WORLD_W,
+      y: Math.random() * WORLD_H,
+      r: Math.random() * 1.8 + 0.5,
+      a: Math.random() * 0.5 + 0.2,
+      c: Math.random() < 0.5 ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.45)",
+      vx: (Math.random() * 2 - 1) * 0.08,
+      vy: (Math.random() * 2 - 1) * 0.08,
+    });
+  return arr;
+}
+function tickParallax(p, vw, vh) {
+  for (const px of p) {
+    px.x += px.vx;
+    px.y += px.vy;
+    if (px.x < 0) px.x = vw;
+    if (px.x > vw) px.x = 0;
+    if (px.y < 0) px.y = vh;
+    if (px.y > vh) px.y = 0;
+  }
+}
+
+// ================== DRAW FUNCTIONS ==================
 function drawBackground(ctx, vw, vh, p) {
   const g = ctx.createLinearGradient(0, 0, vw, vh);
   g.addColorStop(0, COLORS.bgA);
@@ -410,36 +503,14 @@ function drawArenaLines(ctx, vw, vh) {
   ctx.strokeStyle = COLORS.line;
   ctx.lineWidth = 2;
   ctx.strokeRect(8, 8, vw - 16, vh - 16);
-  ctx.setLineDash([6, 10]);
-  ctx.beginPath();
-  ctx.moveTo(0, vh / 2);
-  ctx.lineTo(vw, vh / 2);
-  ctx.strokeStyle = "rgba(255,255,255,0.1)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  ctx.setLineDash([]);
 }
 function drawStars(ctx, stars) {
-  for (const s of stars) drawStar(ctx, s.x, s.y, STAR_R, 5, COLORS.star);
-}
-function drawStar(ctx, x, y, r, spikes, c) {
-  const step = Math.PI / spikes;
-  let rot = (Math.PI / 2) * 3;
-  ctx.beginPath();
-  ctx.moveTo(x, y - r);
-  for (let i = 0; i < spikes; i++) {
-    let x1 = x + Math.cos(rot) * r;
-    let y1 = y + Math.sin(rot) * r;
-    ctx.lineTo(x1, y1);
-    rot += step;
-    x1 = x + Math.cos(rot) * (r * 0.5);
-    y1 = y + Math.sin(rot) * (r * 0.5);
-    ctx.lineTo(x1, y1);
-    rot += step;
-  }
-  ctx.closePath();
-  ctx.fillStyle = c;
-  ctx.fill();
+  stars.forEach((s) => {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, STAR_R, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS.star;
+    ctx.fill();
+  });
 }
 function drawObstacle(ctx, o) {
   ctx.beginPath();
@@ -450,41 +521,35 @@ function drawObstacle(ctx, o) {
   ctx.fillStyle = g;
   ctx.fill();
 }
-function drawPowers(ctx, p) {
-  p.forEach((pw) => {
+function drawPowers(ctx, powers) {
+  powers.forEach((p) => {
     ctx.beginPath();
-    ctx.arc(pw.x, pw.y, POWER_R, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, POWER_R, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.power;
     ctx.fill();
   });
 }
-function drawPlayer(ctx, p, c) {
-  const now = performance.now();
-  const glow = now < (p.boostUntil || 0);
-  if (glow) {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, PLAYER_R + 10, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(34,197,94,0.18)";
-    ctx.fill();
-  }
+function drawPlayer(ctx, p, color) {
   ctx.beginPath();
   ctx.arc(p.x, p.y, PLAYER_R, 0, Math.PI * 2);
-  ctx.fillStyle = c;
+  ctx.fillStyle = color;
   ctx.fill();
 }
-function drawHud(ctx, players, countdown) {
+function drawHud(ctx, players, countdown, running, winner) {
   const vw = ctx.canvas.width / DPR;
   const pad = 16;
   ctx.font = "600 18px system-ui";
   ctx.fillStyle = COLORS.hud;
-  const left = `Pulkit: ${players.pulkit.score}`;
-  const right = `Harshil: ${players.harshil.score}`;
-  ctx.fillText(left, pad, pad + 18);
-  const wR = ctx.measureText(right).width;
-  ctx.fillText(right, vw - pad - wR, pad + 18);
+  ctx.fillText(`Pulkit: ${players.pulkit.score}`, pad, pad + 18);
+  const rightText = `Harshil: ${players.harshil.score}`;
+  const wR = ctx.measureText(rightText).width;
+  ctx.fillText(rightText, vw - pad - wR, pad + 18);
   const t = formatTime(countdown);
   const tW = ctx.measureText(t).width;
   ctx.fillText(t, (vw - tW) / 2, pad + 18);
+
+  if (!running && winner)
+    ctx.fillText(`${winner} Wins!`, vw / 2 - 60, pad + 60);
 }
 function formatTime(s) {
   const mm = Math.floor(s / 60)
@@ -495,67 +560,88 @@ function formatTime(s) {
     .padStart(2, "0");
   return `${mm}:${ss}`;
 }
-function makeParallax(n) {
-  const arr = [];
-  for (let i = 0; i < n; i++) {
-    arr.push({
-      x: Math.random() * WORLD_W,
-      y: Math.random() * WORLD_H,
-      r: Math.random() * 1.8 + 0.5,
-      a: Math.random() * 0.5 + 0.2,
-      c: Math.random() < 0.5 ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.45)",
-      vx: (Math.random() * 2 - 1) * 0.08,
-      vy: (Math.random() * 2 - 1) * 0.08,
-    });
-  }
-  return arr;
-}
-function tickParallax(p, vw, vh) {
-  for (const px of p) {
-    px.x += px.vx;
-    px.y += px.vy;
-    if (px.x < 0) px.x = vw;
-    if (px.x > vw) px.x = 0;
-    if (px.y < 0) px.y = vh;
-    if (px.y > vh) px.y = 0;
-  }
-}
 
+// ================== STYLES ==================
 const styles = {
-  app: { position: "fixed", inset: 0, background: COLORS.bgA, color: "white" },
+  app: {
+    position: "fixed",
+    inset: 0,
+    background: COLORS.bgA,
+    overflow: "hidden",
+    color: "white",
+    fontFamily: "system-ui, sans-serif",
+  },
   wrap: { position: "absolute", inset: 0 },
   canvas: { position: "absolute", inset: 0, borderRadius: 16 },
-  centerUi: { position: "absolute", inset: 0, display: "grid", placeItems: "center" },
-  primaryBtn: {
-    background: "linear-gradient(135deg, #2563eb, #7c3aed)",
-    border: "1px solid rgba(255,255,255,0.2)",
-    color: "white",
-    padding: "12px 22px",
-    borderRadius: 999,
-    fontWeight: 700,
-  },
-  winnerBadge: {
-    position: "absolute",
-    bottom: 22,
-    background: "rgba(0,0,0,0.45)",
-    border: "1px solid rgba(255,255,255,0.2)",
-    padding: "8px 14px",
-    borderRadius: 999,
-  },
-  fullscreenBtn: {
+  topControls: {
     position: "absolute",
     top: 10,
     right: 10,
-    zIndex: 99,
-    background: "rgba(255,255,255,0.1)",
-    border: "1px solid rgba(255,255,255,0.2)",
-    borderRadius: 12,
-    padding: 10,
-    backdropFilter: "blur(6px)",
     display: "flex",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 8,
+  },
+  bottomControls: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  dashBtn: {
+    fontSize: 22,
+    background: "rgba(255,255,255,0.15)",
+    border: "1px solid rgba(255,255,255,0.25)",
+    borderRadius: "50%",
+    width: 50,
+    height: 50,
+    color: "white",
+    textShadow: "0 0 4px #fff",
+  },
+  joyOuter: { display: "flex", flexDirection: "column", alignItems: "center", gap: 6 },
+  joyBase: {
+    width: 100,
+    height: 100,
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.1)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    position: "relative",
     touchAction: "none",
+  },
+  joyStick: {
+    width: 40,
+    height: 40,
+    borderRadius: "50%",
+    background: "rgba(255,255,255,0.5)",
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    transform: "translate(-50%, -50%)",
+    transition: "transform 0.05s linear",
+  },
+  joyLabel: { fontSize: 12, opacity: 0.8 },
+  tutorial: {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    background: "rgba(0,0,0,0.85)",
+    color: "white",
+    zIndex: 20,
+    textAlign: "center",
+    padding: 20,
+  },
+  startBtn: {
+    marginTop: 16,
+    background: "linear-gradient(135deg, #2563eb, #7c3aed)",
+    border: "none",
+    padding: "10px 20px",
+    borderRadius: 999,
+    color: "#fff",
+    fontWeight: 700,
   },
   rotateOverlay: {
     position: "fixed",
@@ -563,11 +649,12 @@ const styles = {
     display: "grid",
     placeItems: "center",
     background: "rgba(0,0,0,0.85)",
+    zIndex: 30,
   },
   rotateCard: {
-    background: "rgba(17,24,39,0.8)",
+    background: "rgba(17,24,39,0.85)",
+    padding: 20,
     borderRadius: 16,
-    padding: "14px 16px",
     textAlign: "center",
   },
 };
