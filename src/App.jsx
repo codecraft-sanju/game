@@ -441,18 +441,24 @@ const styles = {
     pointerEvents: "none",
   },
   // Fixed world, centered — scaled via inline style
-  stage: {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    width: `${WORLD_W}px`,
-    height: `${WORLD_H}px`,
-    transform: "translate(-50%, -50%) scale(1)", // updated dynamically
-    transformOrigin: "top left",
-    willChange: "transform",
-    overflow: "hidden",
-    borderRadius: 16,
-  },
+ stage: {
+  position: "absolute",
+  top: "50%",
+  left: "50%",
+  width: `${WORLD_W}px`,
+  height: `${WORLD_H}px`,
+  transform: "translate(-50%, -50%) scale(1)",
+  transformOrigin: "center center", // 👈 important change
+  display: "flex",                  // 👇 ensures full center layout inside
+  justifyContent: "center",
+  alignItems: "center",
+  willChange: "transform",
+  overflow: "hidden",
+  borderRadius: 16,
+  transition: "transform 0.3s ease, opacity 0.3s ease",
+
+},
+
   canvas: {
     position: "absolute",
     inset: 0,
