@@ -1,510 +1,615 @@
 import React, { useEffect, useRef, useState } from "react";
 
 /**
- * Pulkit & Harshil — Mobile Arena (Ultimate Responsive Edition)
- * by Sanjay ⚡
+ * 📱 Two-Player Mobile Arena — Pulkit vs Harshil
+ * - Landscape-first. Shows rotate overlay if device is in portrait.
+ * - On-screen split controls (bottom = Pulkit, top = Harshil).
+ * - Smooth 60fps loop with requestAnimationFrame.
+ * - Collect stars to score. First to 10 or highest score when timer ends wins.
+ * - No external libraries, pure React + Canvas.
  *
- * ✅ Portrait & landscape responsive
- * ✅ Auto unlock haptics/sound after first tap
- * ✅ Dual joystick / single control modes
- * ✅ Coins, obstacles, scoring, win modal
+ * Controls:
+ *   Pulkit (BOTTOM):  ⬅️  ➡️  ⚡ (dash)
+ *   Harshil (TOP):    ⬅️  ➡️  ⚡ (dash)
+ *
+ * Tips:
+ *  - Keep the phone rotated to landscape for comfy play.
+ *  - Multi-touch enabled (you can hold left+dash, etc.).
  */
 
-const WORLD_W = 540;
-const WORLD_H = 900;
-const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+const TARGET_FPS = 60;
+const WORLD_W = 900;  // logical canvas width (landscape)
+const WORLD_H = 540;  // logical canvas height
+const DPR = Math.max(1, Math.min(2, typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1));
 
-const P1 = { name: "Pulkit", color: "#3b82f6", keys: { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight" } };
-const P2 = { name: "Harshil", color: "#ef4444", keys: { up: "w", down: "s", left: "a", right: "d" } };
+// Player presets
+const P1 = {
+  id: "pulkit",
+  color: "#3b82f6",
+  baseSpeed: 3.2,
+  dashSpeed: 6.0,
+};
 
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const rand = (a, b) => Math.random() * (b - a) + a;
-const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+const P2 = {
+  id: "harshil",
+  color: "#ef4444",
+  baseSpeed: 3.2,
+  dashSpeed: 6.0,
+};
 
-export default function App() {
-  const appRef = useRef(null);
-  const boxRef = useRef(null);
-  const canvasRef = useRef(null);
-  const rafRef = useRef(null);
+const STAR_COLOR = "#facc15";
+const STAR_SIZE = 10;
+const PLAYER_RADIUS = 16;
+const FRICTION = 0.9;
+const DASH_TIME = 180; // ms
+const DASH_COOLDOWN = 900; // ms
+const ROUND_TIME = 60; // seconds
+const WIN_SCORE = 10;
 
-  const [vh, setVh] = useState(window.innerHeight);
-  const [scale, setScale] = useState(1);
-  const [running, setRunning] = useState(true);
-  const [muted, setMuted] = useState(false);
-  const [winner, setWinner] = useState(null);
-  const [showHelp, setShowHelp] = useState(true);
-  const [controlMode, setControlMode] = useState("both");
-  const [scores, setScores] = useState({ pulkit: 0, harshil: 0 });
-  const [vibrationAllowed, setVibrationAllowed] = useState(false);
-
-  const worldRef = useRef(null);
-  const keysRef = useRef({});
-  const audioRef = useRef({ ctx: null });
-
-  const [sticks, setSticks] = useState({
-    left: { active: false, id: null, ox: 0, oy: 0, x: 0, y: 0 },
-    right: { active: false, id: null, ox: 0, oy: 0, x: 0, y: 0 },
+function useLandscape() {
+  const [isLandscape, setIsLandscape] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= window.innerHeight;
   });
-  const JOY_MAX = 80;
-
-  /* unlock haptics + audio on first tap */
   useEffect(() => {
-    const unlock = () => setVibrationAllowed(true);
-    window.addEventListener("touchstart", unlock, { once: true });
-    window.addEventListener("click", unlock, { once: true });
-    return () => {
-      window.removeEventListener("touchstart", unlock);
-      window.removeEventListener("click", unlock);
-    };
-  }, []);
-
-  /* init world */
-  useEffect(() => {
-    resetWorld();
-  }, []);
-
-  function resetWorld() {
-    const size = 30;
-    worldRef.current = {
-      p1: { x: WORLD_W / 2 - 100, y: WORLD_H - 120, r: size / 2, vx: 0, vy: 0, speed: 250 },
-      p2: { x: WORLD_W / 2 + 100, y: WORLD_H - 120, r: size / 2, vx: 0, vy: 0, speed: 250 },
-      coins: spawnCoins(7),
-      obstacles: spawnVerticalObstacles(6),
-      coinTimer: 0,
-      time: 0,
-    };
-    setScores({ pulkit: 0, harshil: 0 });
-    setWinner(null);
-    setShowHelp(true);
-    setRunning(true);
-  }
-
-  function spawnCoins(n) {
-    return Array.from({ length: n }, () => ({
-      x: rand(40, WORLD_W - 40),
-      y: rand(80, WORLD_H - 200),
-      r: 10,
-      spin: rand(0, Math.PI * 2),
-    }));
-  }
-  function spawnVerticalObstacles(n) {
-    return Array.from({ length: n }, () => {
-      const x = rand(40, WORLD_W - 80);
-      const h = rand(180, 280);
-      const y = rand(80, WORLD_H - 200 - h);
-      return { x, y, w: 16, h, vx: rand(-120, 120), vy: 0 };
-    });
-  }
-
-  /* resize */
-  useEffect(() => {
-    const onResize = () => {
-      setVh(window.innerHeight);
-      if (!boxRef.current) return;
-      const bw = boxRef.current.clientWidth;
-      const bh = boxRef.current.clientHeight;
-      const s = Math.min(bw / WORLD_W, bh / WORLD_H);
-      setScale(s > 0 ? s : 1);
-    };
-    onResize();
-    window.addEventListener("resize", onResize);
-    screen.orientation?.addEventListener?.("change", onResize);
+    const onResize = () => setIsLandscape(window.innerWidth >= window.innerHeight);
+    window.addEventListener("resize", onResize, { passive: true });
+    window.addEventListener("orientationchange", onResize, { passive: true });
     return () => {
       window.removeEventListener("resize", onResize);
-      screen.orientation?.removeEventListener?.("change", onResize);
+      window.removeEventListener("orientationchange", onResize);
     };
   }, []);
+  return isLandscape;
+}
 
-  /* keyboard */
-  useEffect(() => {
-    const down = (e) => {
-      keysRef.current[e.key] = true;
-      keysRef.current[e.key.toLowerCase()] = true;
-      if (e.code === "Space") {
-        e.preventDefault();
-        setRunning((r) => !r);
-      }
-    };
-    const up = (e) => {
-      delete keysRef.current[e.key];
-      delete keysRef.current[e.key.toLowerCase()];
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
-  }, []);
+export default function App() {
+  const canvasRef = useRef(null);
+  const wrapRef = useRef(null);
+  const rafRef = useRef(0);
 
-  /* game loop */
-  useEffect(() => {
-    const ctx = canvasRef.current?.getContext("2d");
-    if (!ctx) return;
-    let last = performance.now();
+  // UI/game state
+  const [running, setRunning] = useState(false);
+  const [countdown, setCountdown] = useState(ROUND_TIME);
+  const [winner, setWinner] = useState(null); // "pulkit" | "harshil" | "draw" | null
 
-    const loop = (t) => {
-      const dt = Math.min(32, t - last) / 1000;
-      last = t;
-      if (running && !winner) update(dt);
-      draw(ctx);
-      rafRef.current = requestAnimationFrame(loop);
-    };
-    rafRef.current = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [running, scale, winner, controlMode, sticks]);
-
-  /* update */
-  function update(dt) {
-    const w = worldRef.current;
-    if (!w) return;
-
-    w.time += dt;
-    w.coinTimer += dt;
-
-    if (controlMode === "pulkit" || controlMode === "both") driveByKeys(w.p1, P1.keys);
-    if (controlMode === "harshil" || controlMode === "both") driveByKeys(w.p2, P2.keys);
-    driveBySticks(w);
-
-    moveCircle(w.p1, dt);
-    moveCircle(w.p2, dt);
-    confine(w.p1);
-    confine(w.p2);
-
-    for (const o of w.obstacles) {
-      o.x += o.vx * dt;
-      if (o.x < 0 || o.x + o.w > WORLD_W) {
-        o.vx *= -1;
-        bump();
-      }
-    }
-
-    collideCircleRects(w.p1, w.obstacles);
-    collideCircleRects(w.p2, w.obstacles);
-
-    if (w.coinTimer >= 1.2 && w.coins.length < 12) {
-      w.coins.push(...spawnCoins(1));
-      w.coinTimer = 0;
-    }
-
-    w.coins = w.coins.filter((c) => {
-      const t1 = circleHit(w.p1, c);
-      const t2 = circleHit(w.p2, c);
-      if (t1 || t2) {
-        addScore(t1 ? "pulkit" : "harshil");
-        return false;
-      }
-      c.spin += dt * 3;
-      return true;
-    });
-  }
-
-  /* input + physics helpers */
-  function driveByKeys(p, keys) {
-    const k = keysRef.current;
-    const ax = (k[keys.right] ? 1 : 0) - (k[keys.left] ? 1 : 0);
-    const ay = (k[keys.down] ? 1 : 0) - (k[keys.up] ? 1 : 0);
-    const m = Math.hypot(ax, ay);
-    if (m > 0 && !isStickActiveFor(p)) {
-      p.vx = (ax / m) * p.speed;
-      p.vy = (ay / m) * p.speed;
-    } else if (!isStickActiveFor(p)) {
-      p.vx = 0; p.vy = 0;
-    }
-  }
-  function isStickActiveFor(p) {
-    const w = worldRef.current;
-    if (!w) return false;
-    if (p === w.p1) return sticks.right.active;
-    if (p === w.p2) return sticks.left.active;
-    return false;
-  }
-  function driveBySticks(w) {
-    if (sticks.left.active && (controlMode === "harshil" || controlMode === "both")) {
-      const v = stickVector(sticks.left);
-      w.p2.vx = v.x * w.p2.speed;
-      w.p2.vy = v.y * w.p2.speed;
-    }
-    if (sticks.right.active && (controlMode === "pulkit" || controlMode === "both")) {
-      const v = stickVector(sticks.right);
-      w.p1.vx = v.x * w.p1.speed;
-      w.p1.vy = v.y * w.p1.speed;
-    }
-  }
-  const stickVector = (s) => {
-    const dx = s.x - s.ox, dy = s.y - s.oy, m = Math.hypot(dx, dy);
-    if (m < 6) return { x: 0, y: 0 };
-    return { x: dx / m, y: dy / m };
-  };
-  const moveCircle = (p, dt) => { p.x += p.vx * dt; p.y += p.vy * dt; };
-  const confine = (p) => { p.x = clamp(p.x, p.r, WORLD_W - p.r); p.y = clamp(p.y, p.r, WORLD_H - p.r); };
-  function collideCircleRects(c, rects) {
-    for (const r of rects) {
-      const cx = clamp(c.x, r.x, r.x + r.w);
-      const cy = clamp(c.y, r.y, r.y + r.h);
-      const dx = c.x - cx, dy = c.y - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < c.r * c.r) {
-        const d = Math.sqrt(d2) || 0.0001;
-        const nx = dx / d, ny = dy / d, overlap = c.r - d;
-        c.x += nx * overlap; c.y += ny * overlap;
-        bump();
-      }
-    }
-  }
-  const circleHit = (a, b) => dist(a.x, a.y, b.x, b.y) <= a.r + b.r;
-
-  /* feedback */
-  function addScore(who) {
-    vibrate(20);
-    ping();
-    setScores((s) => {
-      const n = { ...s, [who]: s[who] + 1 };
-      if (n.pulkit >= 10 || n.harshil >= 10) {
-        setWinner(n.pulkit >= 10 ? "Pulkit" : "Harshil");
-        setRunning(false);
-      }
-      return n;
-    });
-  }
-  const vibrate = (ms) => { if (vibrationAllowed) try { navigator.vibrate?.(ms); } catch {} };
-  const bump = () => vibrate(10);
-  const ensureAudio = () => {
-    if (muted) return null;
-    if (audioRef.current.ctx) return audioRef.current.ctx;
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return null;
-    const ctx = new Ctx();
-    audioRef.current.ctx = ctx;
-    return ctx;
-  };
-  const ping = () => {
-    const ctx = ensureAudio();
-    if (!ctx || muted) return;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "triangle"; o.frequency.value = 880; g.gain.value = 0.0015;
-    o.connect(g).connect(ctx.destination);
-    o.start(); o.frequency.linearRampToValueAtTime(1320, ctx.currentTime + 0.06);
-    g.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.08);
-    o.stop(ctx.currentTime + 0.09);
-  };
-
-  /* draw */
-  function draw(ctx) {
-    const c = canvasRef.current;
-    const cssW = Math.floor(WORLD_W * scale);
-    const cssH = Math.floor(WORLD_H * scale);
-    c.width = cssW * DPR;
-    c.height = cssH * DPR;
-    c.style.width = cssW + "px";
-    c.style.height = cssH + "px";
-
-    ctx.save(); ctx.scale(DPR * scale, DPR * scale);
-    const grad = ctx.createLinearGradient(0, 0, 0, WORLD_H);
-    grad.addColorStop(0, "#0b1220"); grad.addColorStop(1, "#0f172a");
-    ctx.fillStyle = grad; ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-
-    const wld = worldRef.current;
-    for (const o of wld.obstacles) {
-      ctx.fillStyle = "#22c55e22"; ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect?.(o.x, o.y, o.w, o.h, 6);
-      ctx.fill(); ctx.stroke();
-    }
-    for (const coin of wld.coins) drawCoin(ctx, coin.x, coin.y, coin.r, coin.spin);
-    drawPlayer(ctx, wld.p1, P1);
-    drawPlayer(ctx, wld.p2, P2);
-    hud(ctx);
-    ctx.restore();
-  }
-  function drawCoin(ctx, x, y, r, spin) {
-    ctx.save(); ctx.translate(x, y);
-    ctx.shadowBlur = 16; ctx.shadowColor = "#f59e0b"; ctx.fillStyle = "#f59e0b";
-    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.85 + Math.cos(spin) * r * 0.15, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.shadowBlur = 0; ctx.strokeStyle = "#fde68a"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(0, 0, r * 0.62 + Math.sin(spin) * r * 0.08, 0, Math.PI * 2); ctx.stroke();
-    ctx.restore();
-  }
-  function drawPlayer(ctx, p, cfg) {
-    ctx.save(); ctx.translate(p.x, p.y);
-    ctx.fillStyle = cfg.color; ctx.strokeStyle = "white"; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(-6, -4, 3, 0, Math.PI * 2); ctx.arc(6, -4, 3, 0, Math.PI * 2); ctx.fill();
-    const tag = cfg.name;
-    ctx.font = "bold 14px system-ui"; const w = ctx.measureText(tag).width + 14;
-    ctx.fillStyle = "#0b1220"; ctx.strokeStyle = "#334155aa";
-    ctx.roundRect?.(-w / 2, -p.r - 26, w, 20, 8);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#e5e7eb"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(tag, 0, -p.r - 16);
-    ctx.restore();
-  }
-  function hud(ctx) {
-    const box = (x, y, label, val, color) => {
-      ctx.save(); ctx.translate(x, y);
-      ctx.fillStyle = "#0b1220cc"; ctx.strokeStyle = color + "aa"; ctx.lineWidth = 2;
-      ctx.roundRect?.(0, 0, 180, 52, 12); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = "#94a3b8"; ctx.font = "600 12px system-ui"; ctx.fillText(label, 12, 16);
-      ctx.fillStyle = "white"; ctx.font = "700 22px system-ui"; ctx.fillText(val.toString().padStart(2, "0"), 12, 36);
-      ctx.restore();
-    };
-    box(14, 12, "Pulkit", scores.pulkit, P1.color);
-    box(WORLD_W - 194, 12, "Harshil", scores.harshil, P2.color);
-    if (!running && !winner) overlayText(ctx, "Paused — tap ▶ to resume");
-    if (winner) overlayText(ctx, `${winner} wins!`);
-  }
-  const overlayText = (ctx, t) => {
-    ctx.save(); ctx.fillStyle = "#0008"; ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-    ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.font = "800 28px system-ui"; ctx.fillText(t, WORLD_W / 2, WORLD_H / 2); ctx.restore();
-  };
-
-  /* touch controls */
-  function onTouchStart(e) {
-    const rect = boxRef.current.getBoundingClientRect();
-    const mid = rect.left + rect.width / 2;
-    const next = { ...sticks };
-    for (const t of e.changedTouches) {
-      const side =
-        controlMode === "pulkit" ? "right" :
-        controlMode === "harshil" ? "left" :
-        t.clientX < mid ? "left" : "right";
-      if (next[side].active) continue;
-      const p = toBox(t.clientX, t.clientY);
-      next[side] = { active: true, id: t.identifier, ox: p.x, oy: p.y, x: p.x, y: p.y };
-    }
-    setSticks(next);
-    setShowHelp(false);
-  }
-  function onTouchMove(e) {
-    const next = { ...sticks };
-    for (const t of e.changedTouches) {
-      const side = matchSide(t.identifier);
-      if (!side) continue;
-      const p = toBox(t.clientX, t.clientY);
-      let dx = p.x - next[side].ox, dy = p.y - next[side].oy;
-      const m = Math.hypot(dx, dy);
-      if (m > JOY_MAX) { dx = (dx / m) * JOY_MAX; dy = (dy / m) * JOY_MAX; }
-      next[side].x = next[side].ox + dx;
-      next[side].y = next[side].oy + dy;
-    }
-    setSticks(next);
-  }
-  function onTouchEnd(e) {
-    const next = { ...sticks };
-    for (const t of e.changedTouches) {
-      const side = matchSide(t.identifier);
-      if (!side) continue;
-      next[side].active = false;
-      next[side].x = next[side].ox;
-      next[side].y = next[side].oy;
-    }
-    setSticks(next);
-  }
-  const matchSide = (id) => (sticks.left.id === id ? "left" : sticks.right.id === id ? "right" : null);
-  const toBox = (cx, cy) => {
-    const r = boxRef.current.getBoundingClientRect();
-    return { x: cx - r.left, y: cy - r.top };
-  };
-
-  /* ui */
-  const uiBtn = (variant) => ({
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "1px solid transparent",
-    fontWeight: 700,
-    cursor: "pointer",
-    fontSize: 14,
-    ...(variant === "primary"
-      ? { background: "#3b82f6", color: "white" }
-      : variant === "danger"
-      ? { background: "#ef4444", color: "white" }
-      : { background: "transparent", color: "white", border: "1px solid #334155" }),
+  // Controls state (held/tapping)
+  const controls = useRef({
+    pulkit: { left: false, right: false, dash: false, lastDash: -Infinity, dashActiveUntil: 0 },
+    harshil: { left: false, right: false, dash: false, lastDash: -Infinity, dashActiveUntil: 0 },
   });
 
+  // Physics state
+  const stateRef = useRef({
+    players: {
+      pulkit: {
+        x: WORLD_W * 0.25,
+        y: WORLD_H * 0.75,
+        vx: 0,
+        vy: 0,
+        score: 0,
+      },
+      harshil: {
+        x: WORLD_W * 0.75,
+        y: WORLD_H * 0.25,
+        vx: 0,
+        vy: 0,
+        score: 0,
+      },
+    },
+    stars: [],
+    lastSpawn: 0,
+    startedAt: 0,
+  });
+
+  // Responsive canvas sizing
+  useEffect(() => {
+    const resize = () => {
+      const canvas = canvasRef.current;
+      const wrap = wrapRef.current;
+      if (!canvas || !wrap) return;
+
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
+      // Fit WORLD_W x WORLD_H inside wrap while preserving aspect ratio
+      const worldRatio = WORLD_W / WORLD_H;
+      let drawW = w, drawH = Math.round(w / worldRatio);
+      if (drawH > h) {
+        drawH = h;
+        drawW = Math.round(h * worldRatio);
+      }
+
+      canvas.style.width = `${drawW}px`;
+      canvas.style.height = `${drawH}px`;
+      canvas.width = Math.round(drawW * DPR);
+      canvas.height = Math.round(drawH * DPR);
+    };
+    resize();
+    const ro = new ResizeObserver(resize);
+    if (wrapRef.current) ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // Game Loop
+  useEffect(() => {
+    const loop = (t) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Scale for DPR
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+      // Clear
+      ctx.clearRect(0, 0, canvas.width / DPR, canvas.height / DPR);
+
+      // Draw arena background
+      drawArena(ctx);
+
+      const s = stateRef.current;
+      if (running) {
+        // Timer
+        const now = performance.now();
+        const elapsed = (now - s.startedAt) / 1000;
+        const remain = Math.max(0, ROUND_TIME - Math.floor(elapsed));
+        if (remain !== countdown) setCountdown(remain);
+
+        // End round conditions
+        if (remain <= 0) {
+          setRunning(false);
+          const { pulkit, harshil } = s.players;
+          if (pulkit.score > harshil.score) setWinner("pulkit");
+          else if (harshil.score > pulkit.score) setWinner("harshil");
+          else setWinner("draw");
+        }
+
+        // Spawn stars
+        if (now - s.lastSpawn > 900 && s.stars.length < 5) {
+          s.lastSpawn = now;
+          s.stars.push(randomStar());
+        }
+
+        // Update players
+        updatePlayer(s.players.pulkit, controls.current.pulkit, P1);
+        updatePlayer(s.players.harshil, controls.current.harshil, P2);
+
+        // Collide with walls
+        clampToBounds(s.players.pulkit);
+        clampToBounds(s.players.harshil);
+
+        // Check star collection
+        checkStars(s.players.pulkit, s.stars);
+        checkStars(s.players.harshil, s.stars);
+      }
+
+      // Draw stars
+      drawStars(ctx, stateRef.current.stars);
+
+      // Draw players + HUD
+      drawPlayer(ctx, s.players.pulkit, P1.color);
+      drawPlayer(ctx, s.players.harshil, P2.color);
+
+      drawHud(ctx, s.players, countdown, running, winner);
+
+      rafRef.current = requestAnimationFrame(loop);
+    };
+
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [running, countdown, winner]);
+
+  const startGame = () => {
+    // reset
+    const s = stateRef.current;
+    s.players.pulkit = { x: WORLD_W * 0.25, y: WORLD_H * 0.75, vx: 0, vy: 0, score: 0 };
+    s.players.harshil = { x: WORLD_W * 0.75, y: WORLD_H * 0.25, vx: 0, vy: 0, score: 0 };
+    s.stars = [];
+    s.lastSpawn = 0;
+    s.startedAt = performance.now();
+    setWinner(null);
+    setCountdown(ROUND_TIME);
+    setRunning(true);
+  };
+
+  const isLandscape = useLandscape();
+
+  // Touch helpers — map buttons to controls
+  const bindTouch = (player, key, pressed) => (e) => {
+    e.preventDefault();
+    const c = controls.current[player];
+    if (!c) return;
+    if (key === "dash") {
+      if (pressed) {
+        const now = performance.now();
+        if (now > c.lastDash + DASH_COOLDOWN) {
+          c.lastDash = now;
+          c.dash = true;
+          c.dashActiveUntil = now + DASH_TIME;
+        }
+      }
+    } else {
+      c[key] = pressed;
+    }
+  };
+
+  // Multi-touch: ensure releasing one finger doesn't kill all buttons.
+  const bindTouchStart = (player, key) => bindTouch(player, key, true);
+  const bindTouchEnd = (player, key) => bindTouch(player, key, false);
+
   return (
-    <div
-      ref={appRef}
-      style={{
-        height: vh + "px",
-        display: "flex",
-        flexDirection: "column",
-        background: "linear-gradient(180deg,#0b1220 0%,#0f172a 100%)",
-        color: "white",
-        fontFamily: "system-ui, sans-serif",
-        padding: 12,
-        gap: 10,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <div style={{ fontWeight: 800 }}>Pulkit & Harshil Arena</div>
-          <div style={{ fontSize: 12, opacity: 0.7 }}>
-            Select who this phone controls → Pulkit / Harshil / Both
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <button style={uiBtn(running ? "secondary" : "primary")} onClick={() => setRunning(!running)}>
-            {running ? "Pause" : "Resume"}
-          </button>
-          <button style={uiBtn("danger")} onClick={resetWorld}>Reset</button>
-          <button style={uiBtn("ghost")} onClick={() => setMuted(!muted)}>{muted ? "Unmute" : "Mute"}</button>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 8 }}>
-        {["pulkit", "harshil", "both"].map((m) => (
-          <button
-            key={m}
-            style={{
-              ...uiBtn(),
-              flex: 1,
-              background: controlMode === m ? "#3b82f6" : "transparent",
-            }}
-            onClick={() => setControlMode(m)}
-          >
-            {m.charAt(0).toUpperCase() + m.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      <div
-        ref={boxRef}
-        style={{
-          flex: 1,
-          display: "grid",
-          placeItems: "center",
-          position: "relative",
-          borderRadius: 16,
-          overflow: "hidden",
-          boxShadow: "0 22px 60px rgba(0,0,0,0.45)",
-          touchAction: "none",
-        }}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-      >
-        <canvas ref={canvasRef} />
-        {winner && (
-          <div style={{
-            position: "absolute", inset: 0, display: "grid", placeItems: "center",
-            background: "rgba(0,0,0,0.45)", backdropFilter: "blur(2px)"
-          }}>
-            <div style={{
-              background: "rgba(15,23,42,0.9)", padding: 16, borderRadius: 12, border: "1px solid #334155",
-              textAlign: "center", maxWidth: "90vw"
-            }}>
-              <h2 style={{ marginBottom: 8 }}>{winner} wins! 🎉</h2>
-              <button style={uiBtn("primary")} onClick={resetWorld}>Play Again</button>
+    <div style={styles.app}>
+      {/* Rotate overlay if portrait */}
+      {!isLandscape && (
+        <div style={styles.rotateOverlay}>
+          <div style={styles.rotateCard}>
+            <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6 }}>Rotate to Play</div>
+            <div style={{ opacity: 0.8, fontSize: 14 }}>
+              Please rotate your phone to landscape for the best two-player experience.
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div style={{ textAlign: "center", opacity: 0.5, fontSize: 12 }}>
-        Made with 💙 for Pulkit & Harshil by sanjay 
+      <div ref={wrapRef} style={styles.gameWrap}>
+
+        {/* Canvas */}
+        <canvas
+          ref={canvasRef}
+          style={styles.canvas}
+          width={Math.round(WORLD_W * DPR)}
+          height={Math.round(WORLD_H * DPR)}
+        />
+
+        {/* Center Start/Reset */}
+        <div style={styles.centerUi}>
+          {!running && (
+            <button style={styles.primaryBtn} onClick={startGame}>
+              {winner ? "Play Again" : "Start"}
+            </button>
+          )}
+          {winner && (
+            <div style={styles.winnerBadge}>
+              {winner === "draw" ? "Draw!" : `${cap(winner)} wins!`}
+            </div>
+          )}
+        </div>
+
+        {/* Top Controls — Harshil */}
+        <div style={styles.topControls} onContextMenu={(e) => e.preventDefault()}>
+          <TouchBtn
+            label="⟵"
+            onStart={bindTouchStart("harshil", "left")}
+            onEnd={bindTouchEnd("harshil", "left")}
+          />
+          <TouchBtn
+            label="⚡"
+            onStart={bindTouchStart("harshil", "dash")}
+            onEnd={bindTouchEnd("harshil", "dash")}
+          />
+          <TouchBtn
+            label="⟶"
+            onStart={bindTouchStart("harshil", "right")}
+            onEnd={bindTouchEnd("harshil", "right")}
+          />
+        </div>
+
+        {/* Bottom Controls — Pulkit */}
+        <div style={styles.bottomControls} onContextMenu={(e) => e.preventDefault()}>
+          <TouchBtn
+            label="⟵"
+            onStart={bindTouchStart("pulkit", "left")}
+            onEnd={bindTouchEnd("pulkit", "left")}
+          />
+          <TouchBtn
+            label="⚡"
+            onStart={bindTouchStart("pulkit", "dash")}
+            onEnd={bindTouchEnd("pulkit", "dash")}
+          />
+          <TouchBtn
+            label="⟶"
+            onStart={bindTouchStart("pulkit", "right")}
+            onEnd={bindTouchEnd("pulkit", "right")}
+          />
+        </div>
       </div>
     </div>
   );
 }
+
+/* =======================
+   Components & Helpers
+   ======================= */
+
+function TouchBtn({ label, onStart, onEnd }) {
+  // Bind both touch and mouse so it also runs on desktop emulators if needed
+  return (
+    <button
+      style={styles.controlBtn}
+      onMouseDown={onStart}
+      onMouseUp={onEnd}
+      onMouseLeave={onEnd}
+      onTouchStart={onStart}
+      onTouchEnd={onEnd}
+    >
+      {label}
+    </button>
+  );
+}
+
+function drawArena(ctx) {
+  // background
+  const w = ctx.canvas.width / DPR;
+  const h = ctx.canvas.height / DPR;
+
+  const grad = ctx.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, "#0b1220");
+  grad.addColorStop(1, "#111827");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  // borders
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(8, 8, w - 16, h - 16);
+
+  // midline
+  ctx.setLineDash([6, 8]);
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.1)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawPlayer(ctx, p, color) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, PLAYER_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  // subtle outline
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,255,255,0.4)";
+  ctx.stroke();
+}
+
+function drawStars(ctx, stars) {
+  for (const s of stars) {
+    drawStar(ctx, s.x, s.y, STAR_SIZE, 5);
+  }
+}
+
+function drawStar(ctx, x, y, r, spikes) {
+  const step = Math.PI / spikes;
+  let rot = Math.PI / 2 * 3;
+  let outer = r, inner = r * 0.5;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y - outer);
+  for (let i = 0; i < spikes; i++) {
+    let x1 = x + Math.cos(rot) * outer;
+    let y1 = y + Math.sin(rot) * outer;
+    ctx.lineTo(x1, y1);
+    rot += step;
+
+    x1 = x + Math.cos(rot) * inner;
+    y1 = y + Math.sin(rot) * inner;
+    ctx.lineTo(x1, y1);
+    rot += step;
+  }
+  ctx.lineTo(x, y - outer);
+  ctx.closePath();
+  ctx.fillStyle = STAR_COLOR;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawHud(ctx, players, countdown, running, winner) {
+  const w = ctx.canvas.width / DPR;
+  const pad = 16;
+
+  ctx.font = "600 18px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  ctx.fillStyle = "white";
+
+  // Scores
+  const left = `Pulkit: ${players.pulkit.score}`;
+  const right = `Harshil: ${players.harshil.score}`;
+  ctx.fillText(left, pad, pad + 18);
+  const textW = ctx.measureText(right).width;
+  ctx.fillText(right, w - pad - textW, pad + 18);
+
+  // Timer (center top)
+  const timer = formatTime(countdown);
+  const timerW = ctx.measureText(timer).width;
+  ctx.fillText(timer, (w - timerW) / 2, pad + 18);
+
+  // Footer hint when not running
+  if (!running && !winner) {
+    const hint = "Tap START, collect ⭐ stars. First to 10 wins!";
+    const hintW = ctx.measureText(hint).width;
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillText(hint, (w - hintW) / 2, 40);
+  }
+}
+
+function formatTime(s) {
+  const mm = Math.floor(s / 60).toString().padStart(2, "0");
+  const ss = Math.floor(s % 60).toString().padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function clampToBounds(p) {
+  p.x = Math.max(8 + PLAYER_RADIUS, Math.min(WORLD_W - 8 - PLAYER_RADIUS, p.x));
+  p.y = Math.max(8 + PLAYER_RADIUS, Math.min(WORLD_H - 8 - PLAYER_RADIUS, p.y));
+}
+
+function randomStar() {
+  // keep stars off walls a bit
+  const margin = 40;
+  return {
+    x: margin + Math.random() * (WORLD_W - margin * 2),
+    y: margin + Math.random() * (WORLD_H - margin * 2),
+  };
+}
+
+function updatePlayer(p, ctrl, preset) {
+  // dash active?
+  const now = performance.now();
+  const dashActive = now < (ctrl.dashActiveUntil || 0);
+
+  const speed = dashActive ? preset.dashSpeed : preset.baseSpeed;
+
+  // horizontal
+  if (ctrl.left && !ctrl.right) p.vx -= speed * 0.4;
+  if (ctrl.right && !ctrl.left) p.vx += speed * 0.4;
+
+  // apply friction
+  p.vx *= FRICTION;
+  p.vy *= FRICTION; // (no gravity; top-down feel)
+
+  // integrate
+  p.x += p.vx;
+  p.y += p.vy;
+
+  // stop dash when time ends
+  if (dashActive && now >= ctrl.dashActiveUntil) {
+    ctrl.dash = false;
+  }
+}
+
+function checkStars(player, stars) {
+  for (let i = stars.length - 1; i >= 0; i--) {
+    const s = stars[i];
+    const dx = player.x - s.x;
+    const dy = player.y - s.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= (PLAYER_RADIUS + STAR_SIZE * 0.6) ** 2) {
+      stars.splice(i, 1);
+      player.score += 1;
+    }
+  }
+}
+
+function cap(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/* =======================
+   Styles (inline, no libs)
+   ======================= */
+const styles = {
+  app: {
+    position: "fixed",
+    inset: 0,
+    background: "#0b1220",
+    color: "white",
+    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    userSelect: "none",
+    WebkitUserSelect: "none",
+    touchAction: "none",
+  },
+  gameWrap: {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    gridTemplateRows: "1fr auto",
+    alignItems: "stretch",
+    justifyItems: "stretch",
+  },
+  canvas: {
+    position: "absolute",
+    inset: 0,
+    margin: "auto",
+    maxWidth: "100%",
+    maxHeight: "100%",
+    borderRadius: 16,
+    boxShadow: "0 10px 40px rgba(0,0,0,0.45)",
+  },
+  centerUi: {
+    position: "absolute",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    pointerEvents: "none",
+  },
+  primaryBtn: {
+    pointerEvents: "auto",
+    background: "linear-gradient(135deg, #2563eb, #7c3aed)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    color: "white",
+    padding: "12px 22px",
+    borderRadius: 999,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+    boxShadow: "0 8px 24px rgba(37,99,235,0.35)",
+  },
+  winnerBadge: {
+    position: "absolute",
+    bottom: 24,
+    background: "rgba(0,0,0,0.45)",
+    border: "1px solid rgba(255,255,255,0.2)",
+    padding: "8px 14px",
+    borderRadius: 999,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+    backdropFilter: "blur(6px)",
+  },
+
+  topControls: {
+    position: "absolute",
+    top: 10,
+    left: 0,
+    right: 0,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "0 16px",
+    pointerEvents: "auto",
+  },
+  bottomControls: {
+    position: "absolute",
+    bottom: 10,
+    left: 0,
+    right: 0,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "0 16px",
+    pointerEvents: "auto",
+  },
+  controlBtn: {
+    flex: "0 0 30%",
+    padding: "12px 0",
+    borderRadius: 14,
+    fontSize: 20,
+    fontWeight: 700,
+    background: "rgba(255,255,255,0.08)",
+    color: "white",
+    border: "1px solid rgba(255,255,255,0.15)",
+    backdropFilter: "blur(8px)",
+    touchAction: "none",
+  },
+
+  rotateOverlay: {
+    position: "fixed",
+    inset: 0,
+    display: "grid",
+    placeItems: "center",
+    background: "radial-gradient(1200px 600px at center, rgba(0,0,0,0.65), rgba(0,0,0,0.9))",
+    zIndex: 50,
+  },
+  rotateCard: {
+    background: "rgba(17,24,39,0.8)",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: 16,
+    padding: "14px 16px",
+    maxWidth: 320,
+    textAlign: "center",
+    backdropFilter: "blur(6px)",
+  },
+};
