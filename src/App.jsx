@@ -32,13 +32,18 @@ import {
 
 export default function App() {
   const canvasRef = useRef(null);
+  const stageRef = useRef(null); // <-- the scaled stage wrapper
   const rafRef = useRef(0);
+
+  // orientation + scaling
+  const [isLandscape, setIsLandscape] = useState(window.innerWidth >= window.innerHeight);
+  const [scale, setScale] = useState(1);
 
   const [running, setRunning] = useState(false);
   const [winner, setWinner] = useState(null);
   const [countdown, setCountdown] = useState(ROUND_TIME);
   const [showTutorial, setShowTutorial] = useState(true);
-  const [uiTick, setUiTick] = useState(0); // force HUD repaint when scores change
+  const [uiTick, setUiTick] = useState(0);
 
   const controls = useRef({
     pulkit: { vx: 0, vy: 0, dash: false, lastDash: -Infinity, dashUntil: 0 },
@@ -59,6 +64,41 @@ export default function App() {
     lastPowerCheck: 0,
   });
 
+  // ===== Orientation + Scale handling =====
+  const recomputeLayout = () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const landscape = w >= h;
+    setIsLandscape(landscape);
+
+    // fit whole WORLD into viewport while keeping aspect
+    const fitScale = Math.min(w / WORLD_W, h / WORLD_H);
+    setScale(fitScale);
+
+    // apply transform to stage (kept outside React style to avoid extra renders)
+    if (stageRef.current) {
+      stageRef.current.style.transform = `translate(-50%, -50%) scale(${fitScale})`;
+    }
+  };
+
+  useEffect(() => {
+    // recompute once immediately
+    recomputeLayout();
+
+    // react to resize + orientation changes (visualViewport for mobile address bar jitter)
+    const vv = window.visualViewport;
+    const onResize = () => recomputeLayout();
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    if (vv) vv.addEventListener("resize", onResize);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+      if (vv) vv.removeEventListener("resize", onResize);
+    };
+  }, []);
+
   // Optional: fullscreen on first tap (mobile vibes)
   useEffect(() => {
     const enableFullscreen = () => {
@@ -71,6 +111,7 @@ export default function App() {
     return () => document.removeEventListener("click", enableFullscreen);
   }, []);
 
+  // ===== RENDER/LOOP =====
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -108,7 +149,6 @@ export default function App() {
       ctx.fillStyle = "#22c55e";
       ctx.fill();
       ctx.shadowBlur = 0;
-      // small inner core
       ctx.beginPath();
       ctx.arc(p.x, p.y, r * 0.45, 0, Math.PI * 2);
       ctx.fillStyle = "white";
@@ -127,7 +167,7 @@ export default function App() {
       ctx.stroke();
     };
 
-    const drawPlayer = (ctx, p, color, t) => {
+    const drawPlayer = (ctx, p, color) => {
       const hitTint = (p.hitTintUntil || 0) > performance.now();
       const r = PLAYER_R * (hitTint ? 1.12 : 1);
       ctx.beginPath();
@@ -138,7 +178,6 @@ export default function App() {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // direction hint / little nose
       const ang = Math.atan2(p.vy, p.vx) || 0;
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
@@ -152,7 +191,7 @@ export default function App() {
       const s = sRef.current;
       const now = performance.now();
 
-      // bg
+      // Clear + BG
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       const g = ctx.createLinearGradient(0, 0, WORLD_W, WORLD_H);
       g.addColorStop(0, COLORS.bgA);
@@ -165,7 +204,6 @@ export default function App() {
       drawParallax(ctx, s.parallax);
 
       if (running) {
-        // timer
         const elapsed = (now - s.startedAt) / 1000;
         const remain = Math.max(0, ROUND_TIME - Math.floor(elapsed));
         if (remain !== countdown) setCountdown(remain);
@@ -173,29 +211,20 @@ export default function App() {
           setRunning(false);
           const { pulkit, harshil } = s.players;
           setWinner(
-            pulkit.score > harshil.score
-              ? "Pulkit"
-              : harshil.score > pulkit.score
-              ? "Harshil"
-              : "Draw"
+            pulkit.score > harshil.score ? "Pulkit" : harshil.score > pulkit.score ? "Harshil" : "Draw"
           );
         }
 
-        // spawn stars
         if (s.stars.length < MAX_STARS && now - s.lastStarAt > STAR_RESPAWN_MS) {
           s.stars.push(randStar());
           s.lastStarAt = now;
         }
 
-        // random chance to spawn power
         if (now - s.lastPowerCheck > POWER_CHANCE_MS) {
           s.lastPowerCheck = now;
-          if (Math.random() < POWER_PROBABILITY) {
-            s.powers.push(randPower());
-          }
+          if (Math.random() < POWER_PROBABILITY) s.powers.push(randPower());
         }
 
-        // move obstacles + wall bounce
         for (const o of s.obstacles) {
           o.x += o.vx;
           o.y += o.vy;
@@ -203,7 +232,6 @@ export default function App() {
           if (o.y < o.r || o.y > WORLD_H - o.r) o.vy *= -1;
         }
 
-        // physics
         updatePlayer(s.players.pulkit, controls.current.pulkit, now);
         updatePlayer(s.players.harshil, controls.current.harshil, now);
 
@@ -211,7 +239,6 @@ export default function App() {
         collideWorldAndObstacles(s.players.harshil, s.obstacles);
         resolvePlayersBounce(s.players.pulkit, s.players.harshil);
 
-        // collections → bump uiTick if score changed so HUD updates right away
         const p1Before = s.players.pulkit.score;
         const p2Before = s.players.harshil.score;
 
@@ -220,41 +247,31 @@ export default function App() {
         takePowerups(s.players.pulkit, s.powers);
         takePowerups(s.players.harshil, s.powers);
 
-        if (
-          s.players.pulkit.score !== p1Before ||
-          s.players.harshil.score !== p2Before
-        ) {
+        if (s.players.pulkit.score !== p1Before || s.players.harshil.score !== p2Before) {
           setUiTick((v) => v + 1);
         }
 
-        // instant win by score cap
-        if (
-          s.players.pulkit.score >= WIN_SCORE ||
-          s.players.harshil.score >= WIN_SCORE
-        ) {
+        if (s.players.pulkit.score >= WIN_SCORE || s.players.harshil.score >= WIN_SCORE) {
           setRunning(false);
-          setWinner(
-            s.players.pulkit.score > s.players.harshil.score ? "Pulkit" : "Harshil"
-          );
+          setWinner(s.players.pulkit.score > s.players.harshil.score ? "Pulkit" : "Harshil");
         }
       }
 
-      // render order: obstacles (back), stars, powers, players (front)
       for (const o of sRef.current.obstacles) drawObstacle(ctx, o);
       const t = performance.now();
       for (const st of sRef.current.stars) drawStar(ctx, st, t);
       for (const pw of sRef.current.powers) drawPower(ctx, pw, t);
-
-      drawPlayer(ctx, sRef.current.players.pulkit, COLORS.p1, t);
-      drawPlayer(ctx, sRef.current.players.harshil, COLORS.p2, t);
+      drawPlayer(ctx, sRef.current.players.pulkit, COLORS.p1);
+      drawPlayer(ctx, sRef.current.players.harshil, COLORS.p2);
 
       rafRef.current = requestAnimationFrame(loop);
     };
 
     loop();
     return () => cancelAnimationFrame(rafRef.current);
-  }, [running, countdown, uiTick]); // uiTick ensures HUD refresh too
+  }, [running, countdown, uiTick]);
 
+  // ===== Game controls =====
   const startGame = () => {
     const s = sRef.current;
     s.players.pulkit = initPlayer(WORLD_W * 0.25, WORLD_H * 0.78);
@@ -292,73 +309,92 @@ export default function App() {
   };
 
   return (
-    <div style={styles.app}>
-      <Background />
-      <canvas
-        ref={canvasRef}
-        width={WORLD_W}
-        height={WORLD_H}
-        style={styles.canvas}
-      />
-      {/* uiTick in dep chain forces fresh HUD numbers */}
-      <Hud
-        key={uiTick}
-        players={sRef.current.players}
-        countdown={countdown}
-        winner={winner}
-      />
+    <div style={styles.root}>
+      {/* Letterboxed background fill */}
+      <div style={styles.backFill} />
 
-      {showTutorial && (
-        <div style={styles.tutorial}>
-          <h2>How to Play</h2>
-          <ul>
-            <li>⭐ Collect stars to score points</li>
-            <li>🟢 Grab boosts for speed</li>
-            <li>🪨 Dodge obstacles</li>
-            <li>🎮 Use joysticks to move both players</li>
-            <li>⚡ Tap dash for burst speed</li>
-            <li>🥇 First to {WIN_SCORE} stars wins!</li>
-          </ul>
-          <button onClick={startGame} style={styles.startBtn}>
-            Start Game
-          </button>
+      {/* Stage: fixed size (WORLD_W x WORLD_H), centered + scaled */}
+      <div ref={stageRef} style={styles.stage}>
+        {/* Everything inside stage stays clamped to game bounds */}
+        <Background />
+        <canvas ref={canvasRef} width={WORLD_W} height={WORLD_H} style={styles.canvas} />
+        <Hud key={uiTick} players={sRef.current.players} countdown={countdown} winner={winner} />
+
+        {showTutorial && (
+          <div style={styles.tutorial}>
+            <h2>How to Play</h2>
+            <ul>
+              <li>⭐ Collect stars to score points</li>
+              <li>🟢 Grab boosts for speed</li>
+              <li>🪨 Dodge obstacles</li>
+              <li>🎮 Use joysticks to move both players</li>
+              <li>⚡ Tap dash for burst speed</li>
+              <li>🥇 First to {WIN_SCORE} stars wins!</li>
+            </ul>
+            <button onClick={startGame} style={styles.startBtn}>Start Game</button>
+          </div>
+        )}
+
+        {running && (
+          <>
+            <div style={styles.topControls}>
+              <Joystick
+                label="H"
+                onChange={(x, y) => (controls.current.harshil = { vx: x, vy: y })}
+              />
+              <button style={styles.dashBtn} onClick={() => onDash("harshil")}>⚡</button>
+            </div>
+            <div style={styles.bottomControls}>
+              <Joystick
+                label="P"
+                onChange={(x, y) => (controls.current.pulkit = { vx: x, vy: y })}
+              />
+              <button style={styles.dashBtn} onClick={() => onDash("pulkit")}>⚡</button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Portrait lock overlay */}
+      {!isLandscape && (
+        <div style={styles.rotateOverlay}>
+          <div style={styles.rotateCard}>
+            <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 6 }}>Rotate your phone</div>
+            <div style={{ opacity: 0.9 }}>
+              This game runs in landscape only. Turn your device sideways to play.
+            </div>
+          </div>
         </div>
-      )}
-
-      {running && (
-        <>
-          <div style={styles.topControls}>
-            <Joystick
-              label="H"
-              onChange={(x, y) => (controls.current.harshil = { vx: x, vy: y })}
-            />
-            <button style={styles.dashBtn} onClick={() => onDash("harshil")}>
-              ⚡
-            </button>
-          </div>
-          <div style={styles.bottomControls}>
-            <Joystick
-              label="P"
-              onChange={(x, y) => (controls.current.pulkit = { vx: x, vy: y })}
-            />
-            <button style={styles.dashBtn} onClick={() => onDash("pulkit")}>
-              ⚡
-            </button>
-          </div>
-        </>
       )}
     </div>
   );
 }
 
 const styles = {
-  app: {
+  root: {
     position: "fixed",
     inset: 0,
+    background: `linear-gradient(135deg, ${COLORS.bgA}, ${COLORS.bgB})`,
     overflow: "hidden",
-    background: COLORS.bgA,
     touchAction: "none",
     userSelect: "none",
+  },
+  backFill: {
+    position: "absolute",
+    inset: 0,
+    background: `radial-gradient(1200px 800px at 50% 50%, rgba(255,255,255,0.06), transparent 60%)`,
+    pointerEvents: "none",
+  },
+  // Fixed-size stage centered; scale applied via inline style in code
+  stage: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    width: `${WORLD_W}px`,
+    height: `${WORLD_H}px`,
+    transform: "translate(-50%, -50%) scale(1)", // updated dynamically
+    transformOrigin: "top left",
+    willChange: "transform",
   },
   canvas: { position: "absolute", inset: 0 },
   tutorial: {
@@ -411,5 +447,28 @@ const styles = {
     height: 50,
     color: "white",
     textShadow: "0 0 4px #fff",
+  },
+  // Portrait lock overlay (blocks everything)
+  rotateOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "#0b1220",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    zIndex: 9999,
+  },
+  rotateCard: {
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.18)",
+    borderRadius: 16,
+    padding: "18px 20px",
+    color: "#fff",
+    textAlign: "center",
+    maxWidth: 380,
+    width: "100%",
+    backdropFilter: "blur(8px)",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
   },
 };
