@@ -32,13 +32,14 @@ import {
 
 export default function App() {
   const canvasRef = useRef(null);
-  const stageRef = useRef(null);        // scaled game world container
+  const stageRef = useRef(null);
   const rafRef = useRef(0);
+  const audioRef = useRef(null);
 
   // orientation + scaling
   const [isLandscape, setIsLandscape] = useState(window.innerWidth >= window.innerHeight);
   const [scale, setScale] = useState(1);
-  const [vh, setVh] = useState(window.innerHeight); // visual viewport height fix
+  const [vh, setVh] = useState(window.innerHeight);
 
   // game ui state
   const [running, setRunning] = useState(false);
@@ -68,22 +69,19 @@ export default function App() {
     lastPowerCheck: 0,
   });
 
-  // ===== Layout: scale stage to fit, but keep UI layer fixed to viewport =====
+  // === layout scaling ===
   const recomputeLayout = () => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     const landscape = w >= h;
     setIsLandscape(landscape);
-
     const fitScale = Math.min(w / WORLD_W, h / WORLD_H);
     setScale(fitScale);
-
     if (stageRef.current) {
       stageRef.current.style.transform = `translate(-50%, -50%) scale(${fitScale})`;
     }
   };
 
-  // visualViewport height (mobile address bar shrink/expand) fix
   const bindViewport = () => {
     const vv = window.visualViewport;
     const h = vv ? vv.height : window.innerHeight;
@@ -93,16 +91,13 @@ export default function App() {
 
   useEffect(() => {
     bindViewport();
-
     window.addEventListener("resize", bindViewport);
     window.addEventListener("orientationchange", bindViewport);
     window.addEventListener("scroll", bindViewport, { passive: true });
-
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", bindViewport);
       window.visualViewport.addEventListener("scroll", bindViewport);
     }
-
     return () => {
       window.removeEventListener("resize", bindViewport);
       window.removeEventListener("orientationchange", bindViewport);
@@ -114,7 +109,7 @@ export default function App() {
     };
   }, []);
 
-  // Optional: fullscreen on first tap (feel like an app)
+  // === fullscreen ===
   useEffect(() => {
     const enableFullscreen = () => {
       const el = document.documentElement;
@@ -126,7 +121,17 @@ export default function App() {
     return () => document.removeEventListener("click", enableFullscreen);
   }, []);
 
-  // ===== RENDER/LOOP =====
+  // === background music ===
+  useEffect(() => {
+    audioRef.current = new Audio("/music/bg.mp3");
+    audioRef.current.loop = true;
+    audioRef.current.volume = 0.3;
+    return () => {
+      if (audioRef.current) audioRef.current.pause();
+    };
+  }, []);
+
+  // === RENDER LOOP ===
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -137,6 +142,21 @@ export default function App() {
         ctx.beginPath();
         ctx.arc(px.x, px.y, px.r, 0, Math.PI * 2);
         ctx.fillStyle = px.c;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    };
+
+    const drawTrail = (ctx, player, color) => {
+      if (!player.trail) return;
+      const now = performance.now();
+      for (let i = 0; i < player.trail.length; i++) {
+        const t = player.trail[i];
+        const alpha = 1 - (now - t.time) / 400;
+        if (alpha <= 0) continue;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${color === COLORS.p1 ? "59,130,246" : "236,72,153"},${alpha})`;
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -164,27 +184,17 @@ export default function App() {
       ctx.fillStyle = "#22c55e";
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r * 0.45, 0, Math.PI * 2);
-      ctx.fillStyle = "white";
-      ctx.globalAlpha = 0.7;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    };
-
-    const drawObstacle = (ctx, o) => {
-      ctx.beginPath();
-      ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,255,255,0.08)";
-      ctx.strokeStyle = "rgba(255,255,255,0.22)";
-      ctx.lineWidth = 2;
-      ctx.fill();
-      ctx.stroke();
     };
 
     const drawPlayer = (ctx, p, color) => {
+      if (!p.trail) p.trail = [];
+      p.trail.push({ x: p.x, y: p.y, time: performance.now() });
+      p.trail = p.trail.filter((pt) => performance.now() - pt.time < 400);
+
+      drawTrail(ctx, p, color);
+
       const hitTint = (p.hitTintUntil || 0) > performance.now();
-      const r = PLAYER_R * (hitTint ? 1.12 : 1);
+      const r = PLAYER_R * (hitTint ? 1.15 : 1);
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -192,21 +202,12 @@ export default function App() {
       ctx.shadowColor = color;
       ctx.fill();
       ctx.shadowBlur = 0;
-
-      const ang = Math.atan2(p.vy, p.vx) || 0;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.arc(p.x, p.y, r + 6, ang - 0.15, ang + 0.15);
-      ctx.strokeStyle = "rgba(255,255,255,0.6)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
     };
 
     const loop = () => {
       const s = sRef.current;
       const now = performance.now();
 
-      // BG
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       const g = ctx.createLinearGradient(0, 0, WORLD_W, WORLD_H);
       g.addColorStop(0, COLORS.bgA);
@@ -214,7 +215,6 @@ export default function App() {
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, WORLD_W, WORLD_H);
 
-      // starfield drift
       tickParallax(s.parallax, WORLD_W, WORLD_H);
       drawParallax(ctx, s.parallax);
 
@@ -226,7 +226,11 @@ export default function App() {
           setRunning(false);
           const { pulkit, harshil } = s.players;
           setWinner(
-            pulkit.score > harshil.score ? "Pulkit" : harshil.score > pulkit.score ? "Harshil" : "Draw"
+            pulkit.score > harshil.score
+              ? "Pulkit"
+              : harshil.score > pulkit.score
+              ? "Harshil"
+              : "Draw"
           );
         }
 
@@ -254,25 +258,22 @@ export default function App() {
         collideWorldAndObstacles(s.players.harshil, s.obstacles);
         resolvePlayersBounce(s.players.pulkit, s.players.harshil);
 
-        const p1Before = s.players.pulkit.score;
-        const p2Before = s.players.harshil.score;
-
         collectItems(s.players.pulkit, s.stars, STAR_R);
         collectItems(s.players.harshil, s.stars, STAR_R);
         takePowerups(s.players.pulkit, s.powers);
         takePowerups(s.players.harshil, s.powers);
-
-        if (s.players.pulkit.score !== p1Before || s.players.harshil.score !== p2Before) {
-          setUiTick((v) => v + 1);
-        }
-
-        if (s.players.pulkit.score >= WIN_SCORE || s.players.harshil.score >= WIN_SCORE) {
-          setRunning(false);
-          setWinner(s.players.pulkit.score > s.players.harshil.score ? "Pulkit" : "Harshil");
-        }
       }
 
-      for (const o of sRef.current.obstacles) drawObstacle(ctx, o);
+      for (const o of sRef.current.obstacles) {
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.strokeStyle = "rgba(255,255,255,0.22)";
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      }
+
       const t = performance.now();
       for (const st of sRef.current.stars) drawStar(ctx, st, t);
       for (const pw of sRef.current.powers) drawPower(ctx, pw, t);
@@ -286,7 +287,7 @@ export default function App() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [running, countdown, uiTick]);
 
-  // ===== Game controls =====
+  // === game start ===
   const startGame = () => {
     const s = sRef.current;
     s.players.pulkit = initPlayer(WORLD_W * 0.25, WORLD_H * 0.78);
@@ -311,6 +312,11 @@ export default function App() {
     setShowTutorial(false);
     setUiTick((v) => v + 1);
     setRunning(true);
+
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(() => {});
+    }
   };
 
   const onDash = (id) => {
@@ -323,34 +329,14 @@ export default function App() {
     }
   };
 
-  // ===== Render =====
+  // === render ===
   return (
-    <div
-      style={{
-        ...styles.root,
-        // visualViewport height fix to truly fullscreen (esp. mobile)
-        minHeight: vh,
-        height: vh,
-      }}
-    >
-      {/* Letterboxed background fill */}
+    <div style={{ ...styles.root, minHeight: vh, height: vh }}>
       <div style={styles.backFill} />
-
-      {/* Scaled game stage (fixed WORLD size, centered, fits any screen) */}
       <div ref={stageRef} style={styles.stage}>
         <Background />
-        <canvas
-          ref={canvasRef}
-          width={WORLD_W}
-          height={WORLD_H}
-          style={styles.canvas}
-        />
-        <Hud
-          key={uiTick}
-          players={sRef.current.players}
-          countdown={countdown}
-          winner={winner}
-        />
+        <canvas ref={canvasRef} width={WORLD_W} height={WORLD_H} style={styles.canvas} />
+        <Hud key={uiTick} players={sRef.current.players} countdown={countdown} winner={winner} />
 
         {showTutorial && (
           <div style={styles.tutorial}>
@@ -359,7 +345,7 @@ export default function App() {
               <li>⭐ Collect stars to score points</li>
               <li>🟢 Grab boosts for speed</li>
               <li>🪨 Dodge obstacles</li>
-              <li>🎮 Move with joysticks (bottom-left & top-right)</li>
+              <li>🎮 Move with joysticks</li>
               <li>⚡ Tap dash for burst speed</li>
               <li>🥇 First to {WIN_SCORE} stars wins!</li>
             </ul>
@@ -370,24 +356,21 @@ export default function App() {
         )}
       </div>
 
-      {/* Viewport-fixed Controls Layer (never scales, never goes off-screen) */}
       {isLandscape && running && (
         <div style={styles.controlsLayer}>
-          {/* Bottom-left: Pulkit joystick + dash */}
           <div style={styles.controlDockBL}>
             <Joystick
               label="P"
-              size={110}                  // Joystick component can ignore if not used; safe
+              size={110}
               onChange={(x, y) => (controls.current.pulkit = { vx: x, vy: y })}
             />
-            <button style={styles.dashBtn} onClick={() => onDash("pulkit")} aria-label="Pulkit Dash">
+            <button style={styles.dashBtn} onClick={() => onDash("pulkit")}>
               ⚡
             </button>
           </div>
 
-          {/* Top-right: Harshil joystick + dash */}
           <div style={styles.controlDockTR}>
-            <button style={styles.dashBtn} onClick={() => onDash("harshil")} aria-label="Harshil Dash">
+            <button style={styles.dashBtn} onClick={() => onDash("harshil")}>
               ⚡
             </button>
             <Joystick
@@ -399,7 +382,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Portrait lock overlay */}
       {!isLandscape && (
         <div style={styles.rotateOverlay}>
           <div style={styles.rotateCard}>
@@ -438,27 +420,22 @@ const styles = {
     inset: 0,
     background:
       "radial-gradient(1200px 800px at 50% 50%, rgba(255,255,255,0.06), transparent 60%)",
-    pointerEvents: "none",
   },
-  // Fixed world, centered — scaled via inline style
- stage: {
-  position: "absolute",
-  top: "50%",
-  left: "50%",
-  width: `${WORLD_W}px`,
-  height: `${WORLD_H}px`,
-  transform: "translate(-50%, -50%) scale(1)",
-  transformOrigin: "center center", // 👈 important change
-  display: "flex",                  // 👇 ensures full center layout inside
-  justifyContent: "center",
-  alignItems: "center",
-  willChange: "transform",
-  overflow: "hidden",
-  borderRadius: 16,
-  transition: "transform 0.3s ease, opacity 0.3s ease",
-
-},
-
+  stage: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    width: `${WORLD_W}px`,
+    height: `${WORLD_H}px`,
+    transform: "translate(-50%, -50%) scale(1)",
+    transformOrigin: "center center",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    willChange: "transform",
+    borderRadius: 16,
+    transition: "transform 0.3s ease",
+  },
   canvas: {
     position: "absolute",
     inset: 0,
@@ -470,7 +447,7 @@ const styles = {
     flexDirection: "column",
     justifyContent: "center",
     alignItems: "center",
-    background: "rgba(0,0,0,0.78)",
+    background: "rgba(0,0,0,0.8)",
     color: "#fff",
     zIndex: 20,
     textAlign: "center",
@@ -487,15 +464,12 @@ const styles = {
     boxShadow: "0 10px 30px rgba(124,58,237,0.35)",
     cursor: "pointer",
   },
-
-  // ===== Controls Layer (fixed to viewport, safe-area aware) =====
   controlsLayer: {
     position: "fixed",
     inset: 0,
-    pointerEvents: "none", // allow touches to pass except on our controls
+    pointerEvents: "none",
     zIndex: 50,
   },
-
   controlDockBL: {
     position: "fixed",
     left: `calc(12px + ${SA.l})`,
@@ -505,7 +479,6 @@ const styles = {
     gap: 10,
     pointerEvents: "auto",
   },
-
   controlDockTR: {
     position: "fixed",
     right: `calc(12px + ${SA.r})`,
@@ -515,7 +488,6 @@ const styles = {
     gap: 10,
     pointerEvents: "auto",
   },
-
   dashBtn: {
     fontSize: 22,
     background: "rgba(255,255,255,0.18)",
@@ -531,8 +503,6 @@ const styles = {
     placeItems: "center",
     cursor: "pointer",
   },
-
-  // Portrait lock overlay
   rotateOverlay: {
     position: "fixed",
     inset: 0,
